@@ -1,0 +1,202 @@
+#!/bin/bash -x
+
+set -e
+
+pushd `dirname $0` > /dev/null
+SCRIPTPATH=`pwd`
+popd > /dev/null
+SCRIPT="$SCRIPTPATH/$(basename $0)"
+
+#############################################################
+# Echo in bold font if stdout is a terminal
+ISTTY=0; if [ -t 1 ]; then ISTTY=1; fi
+bold () { if [ $ISTTY -eq 1 ]; then tput bold; fi; }
+unbold () { if [ $ISTTY -eq 1 ]; then tput sgr0; fi; }
+echo_b ()
+{
+  if [ "$1" = "-e" ]; then
+    echo -e "$(bold)$2$(unbold)"
+  else
+    echo "$(bold)$1$(unbold)"
+  fi
+}
+
+#############################################################
+# Colors in terminal
+yellow () { if [ $ISTTY -eq 1 ]; then tput setaf 3; fi; }
+red () { if [ $ISTTY -eq 1 ]; then tput setaf 1; fi; }
+
+#############################################################
+# Handling warning messages
+warning ()
+{
+  echo -e "$(bold)$(yellow)WARNING:$(unbold) "$1
+}
+
+#############################################################
+# Handling Error messages
+error ()
+{
+  echo -e "$(bold)$(red)ERROR:$(unbold) "$1
+}
+
+
+
+
+
+
+#############################################################
+#check modman file support
+function check_modman {
+	IFS=$'\r\n'
+ 	for line in $(grep -v -e '^#' -e '^\s*$' "$1"); do
+		IFS=$' \t\n'
+
+		# Split <target> <real>
+    		read target real <<< $line
+
+    		# Assume target == real if only one path is given
+    		if [ -z "$real" ]; then
+        		real="$target"
+    		fi
+
+    		# Sanity check for empty data
+    		if [ -z "$target" -o -z "$real" ]; then
+      			error "Invalid input in modman file ($relpath):\n $line"
+      			return 1
+    		fi
+
+		# check for modman things not supported
+		if [ "${taget:0:1}" -eq "@"  ]; then
+			error "@ opperator not supported"
+			return 1
+		fi
+	done
+	return 0
+}
+
+
+#############################################################
+#filter the current git branch to the modman targets
+
+function do_modman_filter {
+	FILE=$1
+	GITKEEP=""
+
+	#$* are now the git arguments
+	shift
+
+
+
+	#parse the modman file into a list of dirs/files to keep in the git repo
+	IFS=$'\r\n'
+ 	for line in $(grep -v -e '^#' -e '^\s*$' "$FILE"); do
+		IFS=$' \t\n'
+
+		# Split <target> <real>
+    		read target real <<< $line
+
+    		# Assume target == real if only one path is given
+    		if [ -z "$real" ]; then
+        		real="$target"
+    		fi
+
+    		# Sanity check for empty data
+    		if [ -z "$target" -o -z "$real" ]; then
+      			error "Invalid input in modman file ($relpath):\n $line"
+      			return 1
+    		fi
+
+		if [ -z "$GITKEEP" ]; then
+			GITKEEP="git reset -q \$GIT_COMMIT -- $real"
+		else
+			GITKEEP="$GITKEEP;git reset -q \$GIT_COMMIT -- $real"
+		fi
+	done
+	if [ -z "$GITKEEP" ]; then
+		error "modman file empty?"
+		return 1
+	fi
+	echo START FILTER
+
+	rm -rf .git/refs/original/
+
+	#first remove all files from the current tree and then only add what is sopesed to be kept
+	git filter-branch --index-filter "git rm --cached -qr -- . ;$GITKEEP" --prune-empty
+
+	echo DONE FILTER
+}
+
+#############################################################
+#rebases the entire branch to remove (empty) merge commits
+function do_git_rebase {
+	rm -rf .git/refs/original/
+	git rebase $(git log --pretty=format:%H|tail -1)
+}
+
+
+#############################################################
+#moves the files in a repo to the new locations
+function do_modman_move {
+	FILE=$1
+	#parse the modman file into a list of dirs/files to move in the git repo
+	IFS=$'\r\n'
+ 	for line in $(grep -v -e '^#' -e '^\s*$' "$FILE"); do
+		IFS=$' \t\n'
+
+		# Split <target> <real>
+    		read target real <<< $line
+		error "$line"
+
+    		# Assume target == real if only one path is given
+    		if [ -z "$real" ]; then
+        		real="$target"
+    		fi
+
+    		# Sanity check for empty data
+    		if [ -z "$target" -o -z "$real" ]; then
+      			error "Invalid input in modman file ($relpath):\n $line"
+      			return 1
+    		fi
+
+		# ceck for if source and dest are the same
+		if [ "$real" == "$target" ]; then
+			continue
+		fi
+
+		echo START MOVING $target
+
+		rm -rf .git/refs/original/
+
+		git filter-branch --tree-filter "mkdir -p `dirname $target`; test $real && mv $real $target || true"
+
+		echo DONE MOVING $target
+	done
+}
+
+
+
+function start {
+	if [ -f "$1" ]; then
+		check_modman $1
+		do_modman_filter $*
+		do_git_rebase $*
+		do_modman_move $*
+		echo "DONE"
+	else
+		echo "please specify the Modman file location"
+	fi
+}
+
+
+
+
+
+
+
+
+
+cmd=$1
+shift
+$cmd $*
+
